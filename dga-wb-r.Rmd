@@ -1,0 +1,469 @@
+---
+title: "DGA Deep Learning"
+output: html_notebook
+---
+
+```{r}
+library(tidyverse)
+library(dbplyr)
+library(RMySQL)
+library(stringr)
+library(keras)
+library(reshape2)
+library(abind)
+library(caret)
+library(plotROC)
+library(plotly)
+```
+
+```{r create-db }
+con <- DBI::dbConnect(RMySQL::MySQL(), 
+  host = "localhost",
+  user = "root",
+  dbname="DGA",
+  password = "dios"
+)
+domains_db <- tbl(con, "Domains")
+domains_tbl<-collect(domains_db)
+domains_tbl %>% filter(label!='Normal')
+
+
+domains_tbl<-domains_tbl %>%  mutate(label=str_replace(label,"DGA.360","DGA")) %>% mutate(label=tolower(label))
+domains_tbl<-domains_tbl %>%  mutate(label=str_replace(label,"conflicker","conficker")) %>% mutate(label=tolower(label))
+
+labels<-domains_tbl %>% group_by(label) %>% summarise(n=n()) %>% select(label) 
+labels<-as.vector(unlist(labels[1])) %>% unique()
+blacklisted_labels = c('dga.banjori', 'dga.suppobox', 'dga.volatile', 'dga.matsnu', 'dga.beebone', 'dga.madmax', 'dga.cryptowall')
+labels<-setdiff(labels,blacklisted_labels)
+```
+
+```{r label-dist,fig.height=3, fig.width=8, paged.print=TRUE}
+dga_labels_freq<-domains_tbl %>% filter(!(label %in% blacklisted_labels)) %>% group_by(label) %>% summarise(freq=n()) %>% filter(grepl('dga',label))
+normal_labels_freq<-domains_tbl %>%  filter(!(label %in% blacklisted_labels)) %>% group_by(label) %>% summarise(freq=n()) %>% filter(!grepl('dga',label))
+
+
+labels_freq <- domains_tbl %>% filter(!(label %in% blacklisted_labels)) %>% summarise(legit=sum(ifelse(!grepl('dga',label),1,0)),dga=sum(ifelse(grepl('dga',label),1,0)))
+
+
+dga_labels_freq %>% summarise(a=sum(freq))
+
+ggplot(melt(labels_freq ))+
+  geom_col(aes(x=variable,y=value,fill=variable))+
+  theme_bw()
+```
+
+```{r}
+dga_labels_freq_fig<-ggplot(dga_labels_freq  %>% arrange(desc(freq)))+
+  geom_col(aes(x=label,y=freq),fill='white',color='black')+
+  theme_bw()+
+  ylab("Total")+
+  xlab("DGA Labels")+
+  theme(axis.text=element_text(size=12))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+        
+ggsave(plot=dga_labels_freq_fig,filename = "/home/harpo/Dropbox/ongoing-work/publicaciones/argencon2018-DGANN/dga_labels_freq_fig.eps",device = "eps", width =10, height = 4)
+
+ggplot(normal_labels_freq)+
+  geom_col(aes(x=label,y=freq),fill='orange')+
+  theme_bw()+
+  ylab("Total")+
+  xlab("Normal Labels")+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+sum((dga_labels_freq  %>% arrange(desc(freq)) %>% top_n(5))$freq) / sum(dga_labels_freq$freq) 
+
+```
+
+```{r}
+class_dga=domains_tbl %>% filter(grepl("dga",label)) %>% filter(!(label %in% blacklisted_labels))
+# calculate Char freq by DGA type
+charlist_by_type=class_dga  %>% group_by(label) %>% do(charlist= unlist(sapply(.$domain, function(x) c(str_split(x,"")[1]))))
+
+dga_type=as.vector(unlist(charlist_by_type$charlist))
+
+charlist_dga_plot<-ggplot(data.frame(charlist=dga_type),aes(x=charlist))+
+   geom_bar(col="black",fill='white',aes(y = (..count..)/sum(..count..)))+
+  scale_y_continuous(labels=percent)+ylab("Percent")+xlab("Domain Characters")+
+  ggtitle("Character Frequency Distribution for DGA domains")+
+  theme_bw()
+
+ggsave(plot=charlist_dga_plot,filename = "/home/harpo/Dropbox/ongoing-work/publicaciones/argencon2018-DGANN/dga_charlist_freq.eps",device = "eps", width =8, height = 2)
+
+
+```
+
+
+```{r fig.height=4, fig.width=8}
+class_normal=domains_tbl %>% filter(grepl("normal",label))
+# calculate Char freq by DGA type
+charlist_by_type=class_normal  %>% group_by(label) %>% do(charlist= unlist(sapply(.$domain, function(x) c(str_split(x,"")[1]))))
+
+normal_type=as.vector(unlist(charlist_by_type$charlist))
+
+
+
+charlist_normal_plot<-ggplot(data.frame(charlist=normal_type),aes(x=charlist))+
+   geom_bar(col="black",fill='white',aes(y = (..count..)/sum(..count..)))+
+  scale_y_continuous(labels=percent)+ylab("Percent")+xlab("Domain Characters")+
+  ggtitle("Character Frequency Distribution for Legit domains")+
+  theme_bw()
+ggsave(plot=charlist_normal_plot,filename = "/home/harpo/Dropbox/ongoing-work/publicaciones/argencon2018-DGANN/normal_charlist_freq.eps",device = "eps", width =8, height = 2)
+charlist_normal_plot
+```
+
+```{r build datasets}
+set.seed(12121)
+train_test_sample<-function(x,percent=0.7){
+  smp_size <- floor(percent * nrow(x))
+  train_ind <- sample(seq_len(nrow(x)), size = smp_size)
+  return (train_ind)
+}
+train_normal=c()
+valid_normal=c()
+test_normal=c()
+
+train_dga=c()
+valid_dga=c()
+test_dga=c()
+for (i in 1:length(labels)){
+  d<-domains_tbl %>% filter(label==labels[i]) #%>% head(10000)
+  d$domain1<-str_split(d$domain,"\\.",simplify = T)[,1]
+  # TODO: Reemplazar por sample() 
+  dindex<-train_test_sample(d,0.4)
+  train<-d[dindex,]
+  test<-d[-dindex,]
+  tindex<-train_test_sample(test,0.5)
+  valid<-test[tindex,]
+  test<-test[-tindex,]
+  if(str_detect(labels[i],"normal")){
+    train_normal<-rbind(train_normal,cbind(domain=train$domain1,label=train$label))
+    valid_normal<-rbind(valid_normal,cbind(domain=valid$domain1,label=valid$label))
+    test_normal<-rbind(test_normal,cbind(domain=test$domain1,label=test$label))
+  }else{
+    train_dga<-rbind(train_dga,cbind(domain=train$domain1,label=train$label))
+    valid_dga<-rbind(valid_dga,cbind(domain=valid$domain1,label=valid$label))
+    test_dga<-rbind(test_dga,cbind(domain=test$domain1,label=test$label))
+  }
+}
+
+```
+
+```{r tokenize}
+library(keras)
+
+valid_characters <- "$abcdefghijklmnopqrstuvwxyz0123456789-_."
+valid_characters_vector <- strsplit(valid_characters,split="")[[1]]
+tokens <- 0:length(valid_characters_vector)
+names(tokens) <- valid_characters_vector
+  
+tokenize <- function(data,labels){
+  #string_char_vector <- strsplit(string,split="")[[1]]
+   x_data <- sapply(
+     lapply(data,function(x) strsplit(tolower(x),split="")),function(x) lapply(x[[1]], function(x) tokens[[x]]))
+   padded_token<-pad_sequences(x_data,maxlen=45,padding='post', truncating='post')
+  return (list(encode=padded_token,domain=data, label=labels))
+  #return (list(encode=padded_token))
+}
+
+to_onehot <- function(data,shape){
+  train <- array(0,dim=c(shape[1],shape[2],shape[3]))
+  for (i in 1:shape[1]){
+    for (j in 1:shape[2])
+      train[i,j,data[i,j]] <- 1
+  }
+  return (train)
+}
+
+build_dataset<- function(data,maxlen){
+  dataset<-tokenize(data[,1],data[,2])
+  shape=c(nrow(dataset$encode),maxlen,length(valid_characters_vector))
+  #dataset$encode<-to_onehot(dataset$encode,shape)
+  return(dataset)
+}
+```
+
+```{r}
+maxlen=45
+train_normal_dataset<-build_dataset(train_normal,maxlen)
+valid_normal_dataset<-build_dataset(valid_normal,maxlen)
+test_normal_dataset<-build_dataset(test_normal,maxlen)
+
+train_dga_dataset<-build_dataset(train_dga,maxlen)
+valid_dga_dataset<-build_dataset(valid_dga,maxlen)
+test_dga_dataset<-build_dataset(test_dga,maxlen)
+
+
+save(train_normal_dataset,file="/home/harpo/Dropbox/ongoing-work/git-repos/dga-algos/data/train_normal_dataset.rda")
+save(valid_normal_dataset,file="/home/harpo/Dropbox/ongoing-work/git-repos/dga-algos/data/valid_normal_dataset.rda")
+save(test_normal_dataset,file="/home/harpo/Dropbox/ongoing-work/git-repos/dga-algos/data/test_normal_dataset.rda")
+
+
+save(train_dga_dataset,file="/home/harpo/Dropbox/ongoing-work/git-repos/dga-algos/data/train_dga_dataset.rda")
+save(valid_dga_dataset,file="/home/harpo/Dropbox/ongoing-work/git-repos/dga-algos/data/valid_dga_dataset.rda")
+save(test_dga_dataset,file="/home/harpo/Dropbox/ongoing-work/git-repos/dga-algos/data/test_dga_dataset.rda")
+
+```
+
+```{r keras data}
+train_dataset_x<-abind(train_dga_dataset$encode,train_normal_dataset$encode,along=1)
+train_dataset_y<-c(rep(1,nrow(train_dga_dataset$encode)),rep(0,nrow(train_normal_dataset$encode)))
+
+valid_dataset_x<-abind(valid_dga_dataset$encode,valid_normal_dataset$encode,along=1)
+valid_dataset_y<-c(rep(1,nrow(valid_dga_dataset$encode)),rep(0,nrow(valid_normal_dataset$encode)))
+
+test_dataset_x<-abind(test_dga_dataset$encode,test_normal_dataset$encode,along=1)
+test_dataset_y<-c(rep(1,nrow(test_dga_dataset$encode)),rep(0,nrow(test_normal_dataset$encode)))
+
+```
+
+```{r keras model}
+
+input_shape <- dim(train_dataset_x)[2]
+inputs<-layer_input(shape = input_shape) 
+```
+# On embedding
+
+As far as I know, the Embedding layer is a simple matrix multiplication that transforms words into their corresponding word embeddings.
+
+The weights of the Embedding layer are of the shape (vocabulary_size, embedding_dimension). For each training sample, its input are integers, which represent certain words. The integers are in the range of the vocabulary size. The Embedding layer transforms each integer i into the ith line of the embedding weights matrix.
+
+In order to quickly do this as a matrix multiplication, the input integers are not stored as a list of integers but as a one-hot matrix. Therefore the input shape is (nb_words, vocabulary_size) with one non-zero value per line. If you multiply this by the embedding weights, you get the output in the shape
+
+(nb_words, vocab_size) x (vocab_size, embedding_dim) = (nb_words, embedding_dim)
+So with a simple matrix multiplication you transform all the words in a sample into the corresponding word embeddings
+
+# On layer_conv_1d
+*filters:* Integer, the dimensionality of the output space (i.e. the number output of filters in the convolution). Un filtro se corresponde a una neurona y cuyo peso determinan el kernel utilizado para la convolucion. Cada neurona tendra una convolucion diferente con un kernel distinto, aunque del mismo tamaño.
+
+*kernel_size:* An integer or list of a single integer, specifying the length of the 1D convolution window.
+
+*strides:* An integer or list of a single integer, specifying the stride length of the convolution. Specifying any stride value != 1 is incompatible with specifying any dilation_rate value != 1.
+```{r keras model convnet}
+nb_filter <- 256
+kernel_size <- 4
+embedingdim <- 100
+
+embeding<- inputs %>% layer_embedding(length(valid_characters_vector), embedingdim , input_length = input_shape)
+
+conv1d <- embeding %>%
+  layer_conv_1d(filters = nb_filter, kernel_size = kernel_size, activation = 'relu', padding='valid',strides=1) %>%
+  layer_flatten() %>%
+  layer_dense(1024,activation='relu') %>%
+  layer_dense(1,activation = 'sigmoid')
+
+#compile model
+model <- keras_model(inputs = inputs, outputs = conv1d) 
+model %>% compile(
+  optimizer = 'adam',
+  loss = 'binary_crossentropy',
+  metrics = c('accuracy')
+)
+
+summary(model)
+history_5epochs<-model %>% fit(train_dataset_x,train_dataset_y,epochs = 10, batch_size = 4096, validation_data = list(valid_dataset_x,valid_dataset_y))
+
+
+```
+```{r}
+history_plot<-plot (history_5epochs)+
+  geom_line()+
+  theme_bw()+
+  theme(legend.position="bottom")
+
+ggsave(plot=history_plot,filename = "/home/harpo/Dropbox/ongoing-work/publicaciones/argencon2018-DGANN/nn_epoch.eps",device = "eps", width =8, height = 3)
+history_plot
+```
+
+```{r test}
+
+predsprobs<-model %>% predict(test_dataset_x, batch_size=4096)
+preds<-ifelse(predsprobs>0.9,1,0)
+confusionMatrix(preds,test_dataset_y,positive = '1')
+```
+
+```{r roc curve}
+auc_plot<-ggplot(data.frame(yes=predsprobs,class=test_dataset_y), aes(m = yes, d = factor(class, labels=c("no","yes"),levels = c(0, 1)))) + 
+    geom_roc(hjust = -0.4, vjust = 1.5, n.cuts=20,colour='orange') + 
+    geom_abline(intercept = 0, slope = 1,colour='red')+
+    xlab("False Alarm Rate")+
+    ylab("Attack Detection Rate")+
+  theme_bw()
+auc_plot
+ggsave(plot=auc_plot,filename = "/home/harpo/Dropbox/ongoing-work/publicaciones/argencon2018-DGANN/auc_plot.eps",device = "eps", width =8, height = 3)
+
+
+ 
+data.frame(pred=predsprobs,class=test_dataset_y,label= c(test_dga_dataset$label,test_normal_dataset$label)) 
+
+```
+```{r analisys per DGA type, fig.height=6, fig.width=12}
+
+nntest<-data.frame(predicted_probability=predsprobs,class=test_dataset_y,label= c(test_dga_dataset$label,test_normal_dataset$label),domain=c(test_dga_dataset$domain,test_normal_dataset$domain)) 
+
+nntest<-nntest %>% mutate(predicted_class=ifelse(predicted_probability>0.9,1,0))
+nntest<-nntest %>% mutate(label=str_replace(label,"conflicker","conficker"))
+recall<-nntest %>% group_by(label) %>% summarise(recall=sum(predicted_class==class)/n(),support=n()) 
+precision_far=nntest %>% group_by(label) %>% summarise(precision=1-(sum(predicted_class!=class)/n()),support=n()) 
+#recall=recall %>% filter( label %in% worbased)
+#confusionMatrix(nntest$predicted_class,nntest$class)
+
+whaleboneplot<-ggplot(recall %>% filter(!grepl('normal',label)) %>% mutate(label=str_replace(label,"conflicker","conficker")),aes(x=label,y=recall))+
+  geom_point(aes(size=support),color='black',fill='orange',shape = 21,alpha=0.5)+
+  geom_point(size=1,color='blue',fill='blue',shape = 21)+
+  ylab("Attack Detection Rate")+
+  ggtitle("")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  scale_color_gradient2(low = "cyan", mid='blue',high = "red")+
+   xlab('DGA Malware types' )+
+   guides(colour=FALSE,size=FALSE)+
+    scale_size_continuous(range = c(5,15))
+ # scale_size_area(max_size = 15) 
+#ggsave(plot=whaleboneplot,filename = "/home/harpo/Dropbox/ongoing-work/publicaciones/argencon2018-DGANN/recall_per_malware_2.png",device = "png", width =8, height = 4)
+
+whaleboneplot_normal<-ggplot(recall %>% filter(grepl('normal',label)) %>% mutate(label=str_replace(label,"conflicker","conficker")),aes(x=label,y=1-recall))+
+  geom_point(aes(size=support),color='black',fill='skyblue',shape = 21,alpha=0.5)+
+  geom_point(size=1,color='blue',fill='blue',shape = 21)+
+  ylab("False Positive Rate")+
+  ggtitle("")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  scale_color_gradient2(low = "cyan", mid='blue',high = "red")+
+   xlab('DGA Malware types' )+
+   guides(colour=FALSE,size=FALSE)+
+    scale_size_continuous(range = c(5,15))
+ # scale_size_area(max_size = 15) 
+#ggsave(plot=whaleboneplot_normal,filename = "/home/harpo/Dropbox/ongoing-work/publicaciones/argencon2018-DGANN/recall_per_normal.png",device = "png", width =4, height = 2.5)
+
+whaleboneplot  
+```
+
+```{r}
+nntest
+
+FN_domains<-nntest %>% filter(predicted_class == 0 & class == 1) %>% select(domain,predicted_probability,label)
+FP_domains<-nntest %>% filter(predicted_class == 1 & class == 0) %>% select(domain,predicted_probability,label)
+TP_domains<-nntest %>% filter(predicted_class == 1 & class == 1) %>% select(domain,predicted_probability,label)
+TN_domains<-nntest %>% filter(predicted_class == 0 & class == 0) %>% select(domain,predicted_probability,label)
+```
+
+```{r}
+charlist_FN=FN_domains %>% group_by(label) %>% do(charlist= unlist(sapply(.$domain, function(x) c(str_split(x,"")[1]))))
+charlist_FP=FP_domains %>% group_by(label) %>% do(charlist= unlist(sapply(.$domain, function(x) c(str_split(x,"")[1]))))
+charlist_TP=TP_domains %>% group_by(label) %>% do(charlist= unlist(sapply(.$domain, function(x) c(str_split(x,"")[1]))))
+charlist_TN=TN_domains %>% group_by(label) %>% do(charlist= unlist(sapply(.$domain, function(x) c(str_split(x,"")[1]))))
+
+charlist_FN=as.vector(unlist(charlist_FN %>% select(charlist)))
+charlist_FP=as.vector(unlist(charlist_FP %>% select(charlist)))
+charlist_TP=as.vector(unlist(charlist_TP %>% select(charlist)))
+charlist_TN=as.vector(unlist(charlist_TN %>% select(charlist)))
+
+save(charlist_FN,file  ="/home/harpo/Dropbox/ongoing-work/git-repos/dga-wb-r/charlist_FN.rda")
+save(charlist_FP,file  ="/home/harpo/Dropbox/ongoing-work/git-repos/dga-wb-r/charlist_FP.rda")
+save(charlist_TP,file  ="/home/harpo/Dropbox/ongoing-work/git-repos/dga-wb-r/charlist_TP.rda")
+save(charlist_TN,file  ="/home/harpo/Dropbox/ongoing-work/git-repos/dga-wb-r/charlist_TN.rda")
+
+
+```
+
+```{r}
+library(scales)
+tpplot<-ggplot(data.frame(charlist=charlist_TP),aes(x=charlist))+
+    geom_bar(col="black",fill='white',aes(y = (..count..)/sum(..count..)))+
+    scale_y_continuous(labels=percent)+ylab("Percent")+xlab("")+
+   theme_bw()
+
+tnplot<-ggplot(data.frame(charlist=charlist_TN),aes(x=charlist))+
+    geom_bar(col="black",fill='white',aes(y = (..count..)/sum(..count..)))+
+    scale_y_continuous(labels=percent)+ylab("Percent")+xlab("")+
+   theme_bw()
+
+
+
+fnplot<-ggplot(data.frame(charlist=charlist_FN),aes(x=charlist))+
+    geom_bar(col="black",fill='white',aes(y = (..count..)/sum(..count..)))+
+    scale_y_continuous(labels=percent)+ylab("Percent")+xlab("")+
+   theme_bw()
+
+fpplot<-ggplot(data.frame(charlist=charlist_FP),aes(x=charlist))+
+    geom_bar(col="black",fill='white',aes(y = (..count..)/sum(..count..)))+
+    scale_y_continuous(labels=percent)+ylab("Percent")+xlab("")+
+   theme_bw()
+gridExtra::grid.arrange(fnplot,tpplot,fpplot,tnplot,ncol=1)
+```
+
+```{r keras model lstm endgame}
+input_shape <- dim(train_dataset_x)[2]
+inputs<-layer_input(shape = input_shape) 
+
+embeding<- inputs %>% layer_embedding(length(valid_characters_vector), 128 , input_length = input_shape)
+
+lstm <- embeding %>%
+  layer_lstm(units = 128) %>%
+  layer_dropout(rate = 0.5) %>%
+  layer_dense(1, activation = 'sigmoid')
+
+#compile model
+model_endgame <- keras_model(inputs = inputs, outputs = lstm)
+model_endgame %>% compile(
+  optimizer = 'rmsprop',
+  loss = 'binary_crossentropy',
+  metrics = c('accuracy')
+)
+summary(model_endgame)
+model_endgame %>% fit(train_dataset_x,train_dataset_y,epochs = 10, batch_size = 4096, validation_data = list(valid_dataset_x,valid_dataset_y))
+
+```
+```{r endgame evaluation}
+predsprobs_endgame<-model_endgame %>% predict(test_dataset_x, batch_size=4096)
+preds_endgame<-ifelse(predsprobs_endgame>0.9,1,0)
+confusionMatrix(preds_endgame,test_dataset_y,positive = '1')
+```
+
+
+```{r analisys per DGA type for Endgame, fig.height=4, fig.width=12}
+
+nntest_endgame<-data.frame(predicted_probability=predsprobs_endgame,class=test_dataset_y,label= c(test_dga_dataset$label,test_normal_dataset$label),domain=c(test_dga_dataset$domain,test_normal_dataset$domain)) 
+
+nntest_endgame<-nntest_endgame %>% mutate(predicted_class=ifelse(predicted_probability>0.9,1,0))
+
+recall_endgame<-nntest_endgame %>% group_by(label) %>% summarise(recall=sum(predicted_class==class)/n(),support=n()) 
+
+plot_endgame<-ggplot(recall_endgame %>% filter(!grepl('normal',label)) ,aes(x=label,y=recall))+
+  geom_point(aes(size=support),color='black',fill='skyblue',shape = 21,alpha=0.5)+
+  geom_point(size=1,color='blue',fill='blue',shape = 21)+
+  ggtitle("NN ")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  scale_color_gradient2(low = "cyan", mid='blue',high = "red")+
+   xlab('Types' )+ylab("Recall")+
+   guides(colour=FALSE,size=FALSE)+
+    scale_size_continuous(range = c(5,15))
+ # scale_size_area(max_size = 15) 
+ggplotly(plot_endgame)
+```
+
+```{r fig.height=5, fig.width=10}
+
+recall_concat <- cbind(recall, recall2=recall_endgame$recall) %>% mutate(sign=ifelse(recall-recall2>=0,'positive','negative'))
+
+#recall_concat <- reshape2::melt(recall_contact)
+ggplot(recall_concat,aes(x=label))+
+  geom_col(aes(y=recall-recall2,fill=sign),alpha=0.5)+
+  
+  ggtitle("NN ")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  scale_color_gradient2(low = "cyan", mid='blue',high = "red")+
+   xlab('Types' )+ylab("Recall Diff (convnet - lstm)")+
+   guides(colour=FALSE,size=FALSE)+
+    scale_size_continuous(range = c(5,15))
+
+ggplotly()
+
+gridExtra::grid.arrange(whaleboneplot,plot_endgame,nrow=1)
+```
+
