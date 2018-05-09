@@ -1,0 +1,86 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r}
+library(tidyverse)
+library(dbplyr)
+library(RMySQL)
+library(stringr)
+library(keras)
+library(reshape2)
+library(abind)
+library(caret)
+library(plotROC)
+library(plotly)
+```
+## Merging bambenek domains with cz domains
+```{r}
+domains<-read_delim("datasets/domaindb-edna-05-02-2018.tsv.gz",delim = '\t')
+old_domains<-read_csv("datasets/argencon.csv.gz")
+
+
+old_normal<-old_domains %>% filter(grepl(pattern = "normal.bambenek", x = label )) 
+normal<-domains %>% filter(grepl(pattern = "normal", x = label )) 
+
+all_normal_but_bambenek<-anti_join(normal,old_normal,by='domain')
+final_normal_domains<-rbind(all_normal_but_bambenek,old_normal)
+
+final_domains<-rbind(domains %>% filter(!grepl(pattern = "normal", x = label )),
+               final_normal_domains)
+
+final_domains<-final_domains %>%  mutate(label=str_replace(label,"normal$","normal.cz"))
+final_domains<-final_domains %>% mutate(label=str_replace(label,"conflicker","conficker")) %>% mutate(label=tolower(label))
+
+final_domains %>% group_by(label) %>% summarise(total=n())
+```
+
+## Create CSV
+```{r}
+readr::write_csv(final_domains, path = paste('./datasets/',"JISA2018.csv",sep=''))
+
+```
+
+## Dataset Class Distribution
+```{r label-dist,fig.height=3, fig.width=8, paged.print=TRUE}
+dga_labels_freq<-final_domains %>%  group_by(label) %>% summarise(freq=n()) %>% filter(grepl('dga',label))
+normal_labels_freq<-final_domains %>%  group_by(label) %>% summarise(freq=n()) %>% filter(!grepl('dga',label))
+
+labels_freq <- domains  %>% summarise(normal=sum(ifelse(!grepl('dga',label),1,0)),dga=sum(ifelse(grepl('dga',label),1,0)))
+
+
+```
+
+```{r}
+ggplot(melt(labels_freq ))+
+  geom_col(aes(x=variable,y=value,fill=variable))+
+  theme_bw()
+```
+
+## Malware families Episode Frequency Distribution
+```{r}
+dga_labels_freq_fig<-ggplot(dga_labels_freq  %>% arrange(desc(freq)))+
+  geom_col(aes(x=label,y=freq),fill='white',color='black')+
+  theme_bw()+
+  ylab("Total")+
+  xlab("DGA Labels")+
+  theme(axis.text=element_text(size=12))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+        
+#ggsave(plot=dga_labels_freq_fig,filename = "/home/harpo/Dropbox/ongoing-work/publicaciones/argencon2018-DGANN/dga_labels_freq_fig.eps",device = "eps", width =10, height = 4)
+
+normal_labels_freq_fig<-ggplot(normal_labels_freq)+
+  geom_col(aes(x=label,y=freq),fill='orange')+
+  theme_bw()+
+  ylab("Total")+
+  xlab("Normal Labels")+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+dga_labels_freq_fig
+
+normal_labels_freq_fig
+```
+
+

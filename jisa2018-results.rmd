@@ -1,0 +1,42 @@
+---
+title: "JISA 2018 preliminary results"
+output: html_notebook
+---
+```{r}
+jisa_results_all<-read.csv("results/results_default-experiment.csv")
+jisa_results_per_class<-read.csv("results/results_per_subclass_default-experiment.csv")
+```
+
+Source code available on github (https://github.com/harpomaxx/dga-cnn)
+
+## Crosvalidation results using datataset from edna mySQL (accesed 05/02/2018)
+
+Dataset available [here](https://www.dropbox.com/s/eqb3h4i7pqcr58z/JISA2018.csv.gz?dl=1) 
+
+### Results considering both classes Malware DGA and Normal
+
+```{r}
+jisa_results_all %>% group_by(metric) %>% summarise(mean=mean(value),sd=sd(value))
+
+jisa_results_all %>% filter(metric=="Sensitivity" | metric == "Specificity" | metric=="F1" | metric=="Balanced Accuracy") %>%
+
+ggplot() +
+  geom_boxplot(aes(x=metric,y=value,fill=metric))+
+  theme_bw()+
+   theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+### Results considering malware and normal subclasses
+
+```{r fig.height=6, fig.width=10}
+jisa_results_per_class %>% group_by(label) %>% summarise(mean=mean(recall),sd=sd(recall))
+
+jisa_results_per_class %>%
+  ggplot()+
+  geom_boxplot(aes(x=label,y=recall,color=label))+
+  theme_bw()+ylab("Sensitivity (AKA Recall)")+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  guides(color=FALSE)
+
+```
+

@@ -8,7 +8,8 @@ suppressPackageStartupMessages(library("caret"))
 suppressPackageStartupMessages(library("e1071"))
 
 option_list <- list(
-  make_option("--generate", action="store_true",  help = "generate train and test files", default=FALSE)
+  make_option("--generate", action="store_true",  help = "generate train and test files", default=FALSE),
+  make_option("--experimenttag", action="store", type="character", default="default-experiment", help = "set experiment tag ")
 )
 opt <- parse_args(OptionParser(option_list=option_list))
 
@@ -19,7 +20,7 @@ set.seed(12121) # For ensuring repeatibility
 results_dir='./results/'
 models_dir='./models/'
 datasets_dir='./datasets/'
-dataset_default='argencon.csv.gz'
+dataset_default='JISA2018.csv.gz'
 
 # Function implemeting k-fold cross validation 
 # modelfun: reference to the function that create the keras model
@@ -59,7 +60,7 @@ evaluate_model <- function(data,k=5, modelfun = keras_model_cnn_argencon){
 ##
 ## MAIN Section
 ##
-execid='cnn-test' # id used during the experiment. Output file will used either
+#opt$experimenttag='cnn-test' # id used during the experiment. Output file will used either
 maxlen=45         # the maximum length of the domain name considerd for input of the NN
 
 #dataset<-create_csv("argencon.csv")
@@ -68,7 +69,6 @@ if (!file.exists("datasets/.train_dataset_keras.rd")){
 	print(" []  train and test files not found. Generating")
 	opt$generate<-TRUE
 }
-
 
 if ( opt$generate){
   dataset<-read_csv(paste(datasets_dir,dataset_default,sep=""))
@@ -98,8 +98,8 @@ results<-evaluate_model(modelfun=keras_model_cnn_argencon,data=train_dataset_ker
 ## Save results to csv
 print("[] Saving results ")
 names(results$result)<-c("k","metric","value")
-write_csv(results$result,col_names = T,path=paste(results_dir,"results_",execid,".csv",sep=""))
-write_csv(results$resultperclass,col_names = T,path=paste(results_dir,"results_per_subclass_",execid,".csv",sep=""))
+write_csv(results$result,col_names = T,path=paste(results_dir,"results_",opt$experimenttag,".csv",sep=""))
+write_csv(results$resultperclass,col_names = T,path=paste(results_dir,"results_per_subclass_",opt$experimenttag,".csv",sep=""))
 
 # SAVE model
 #TODO
