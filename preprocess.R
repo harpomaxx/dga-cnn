@@ -37,3 +37,17 @@ train_test_sample<-function(x,percent=0.7){
   train_ind <- sample(seq_len(nrow(x)), size = smp_size)
   return (train_ind)
 }
+
+build_train_test<-function(datasetfile,maxlen){
+  dataset<-read_csv(datasetfile)
+  dataset$domain1<-str_split(dataset$domain,"\\.",simplify = T)[,1]
+  dindex<-train_test_sample(dataset,0.4)
+  train_dataset<-dataset[dindex,]
+  test_dataset<-dataset[-dindex,]
+  # Dataset transformation usually requires a lot of time. Some sort of caching needed
+  train_dataset_keras<-build_dataset(as.matrix(train_dataset),maxlen)
+  save(train_dataset_keras,file = "datasets/.train_dataset_keras.rd")
+  test_dataset_keras<-build_dataset(as.matrix(test_dataset),maxlen)
+  save(test_dataset_keras,file = "datasets/.test_dataset_keras.rd")
+  return(list(train=train_dataset_keras,test=test_dataset_keras))
+}

@@ -1,35 +1,20 @@
 library(keras)
-# Compile keras model used in ARGECON 2018 paper
-keras_model_cnn_argencon<-function(x)
-{
-  input_shape <- dim(x)[2]
-  inputs<-layer_input(shape = input_shape) 
-  
-  nb_filter <- 256
-  kernel_size <- 4
-  embedingdim <- 100
-  
-  embeding<- inputs %>% layer_embedding(length(valid_characters_vector), embedingdim , input_length = input_shape)
-  
-  conv1d <- embeding %>%
-    layer_conv_1d(filters = nb_filter, kernel_size = kernel_size, activation = 'relu', padding='valid',strides=1) %>%
-    layer_flatten() %>%
-    layer_dense(1024,activation='relu') %>%
-    layer_dense(1,activation = 'sigmoid')
-  
-  #compile model
-  model <- keras_model(inputs = inputs, outputs = conv1d) 
-  model %>% compile(
-    optimizer = 'adam',
-    loss = 'binary_crossentropy',
-    metrics = c('accuracy')
-  )
-  
-  return (model)
-}
+funcs<-list()
+#source(list.files(pattern = "model_.*.R"))
+source("model_cnn_argencon.R")
+source("model_cnn_pablo.R")
+source("model_lstm_endgame.R")
+
+# list for selecting between different models
+#funcs<-list( cnn_argencon=keras_model_cnn_argencon,
+#              cnn_pablo=keras_model_cnn_pablo,
+#              lstm_endgame=keras_model_lstm_endgame
+#             )
+
+
 # Train model
-train_model <- function(x,y, model){
-  history<-model %>% fit(x,y,epochs = 5, batch_size = 4096, validation_split = 0.2,verbose = T)
-  model %>% save_model_hdf5("cnn-nomlp.h5")
+train_model <- function(x,y, model,ep=5,modelname="model"){
+  history<-model %>% fit(x,y,epochs = ep, batch_size = 4096, validation_split = 0.2,verbose = 2)
+ # model %>% save_model_hdf5(paste(modelname,".h5",sep=""))
   return(list(model=model,history=history))
 }
