@@ -1,0 +1,358 @@
+---
+title: "Experimentos CACIC 2018"
+output: html_notebook
+---
+```{r}
+library(tidyverse)
+```
+
+```{r}
+dataset<-read.csv("datasets/argencon.csv.gz")
+dataset
+```
+
+```{r}
+labels_freq<-dataset %>% group_by(label) %>% summarise(freq=n())
+labels_freq
+#write_csv(labels_freq,path="datasets/argencon_labels_scheme.csv")
+```
+
+
+```{r}
+labels_freq %>% arrange(desc(freq))
+```
+
+```{r}
+labels_freq %>% mutate(class=ifelse(grepl("dga",label),1,0)) %>% group_by(class) %>% summarise(total=sum(freq))
+labels_freq %>% filter(grepl("dga",label)) %>% summarise(total=sum(freq))
+labels_freq %>% filter(!grepl("dga",label)) %>% summarise(total=sum(freq))
+
+
+```
+```{r fig.width=8}
+## Malware families Episode Frequency Distribution
+
+dga_labels_freq<-labels_freq %>% filter(grepl("dga",label))
+dga_labels_freq_fig<-ggplot(dga_labels_freq  %>% arrange(desc(freq)))+
+  geom_col(aes(x=label,y=freq),fill='white',color='black')+
+  theme_bw()+
+  ylab("Total")+
+  xlab("DGA Labels")+
+  theme(axis.text=element_text(size=12))+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave(plot=dga_labels_freq_fig,filename = "/home/harpo/Dropbox/ongoing-work/publicaciones/CACIC2018/dga_labels_freq_fig.eps",device = "eps", width =10, height = 4)
+dga_labels_freq_fig
+
+```
+
+## Top 5 DGA families
+```{r top 5 DGA}
+top_dga_families<-(dga_labels_freq  %>% arrange(desc(freq)) %>% top_n(5))
+sum((dga_labels_freq  %>% arrange(desc(freq)) %>% top_n(5))$freq) / sum(dga_labels_freq$freq) 
+top_dga_families
+```
+```{r}
+dataset %>% filter(label=="dga.banjori")
+```
+
+# Creating the model using standard datasets (i.e. OSINT and ALEXA)
+## Preparing dataset
+```{r} 
+source("preprocess.R")
+datasets<-build_train_test(datasetfile = "datasets/argencon.csv.gz",maxlen = 45)
+# WARNING: to avoid regenerating de train and test sets, just uncomments the following lines
+# WARNING: there is no guarantee the files saved correspond to argencon.csv. If unsure, just re-run build_train_test()
+load(file='datasets/.train_dataset_keras.rd')
+load(file='datasets/.test_dataset_keras.rd')
+datasets<-list()
+datasets$train<-train_dataset_keras
+datasets$test<-test_dataset_keras
+```
+
+
+# Reading Best Parameters
+```{r}
+library(readr)
+library(xtable)
+parameters<-read_csv("results/results_tuning_cacic2018-k10.csv")
+parameters %>% arrange(desc(value.F1)) %>% filter(kernel_size!=16) %>% head(5) %>% xtable(digits = 5)
+
+```
+
+
+```{r}
+selected_parameters=list(
+  nb_filter = 256,
+  kernel_size = 4,
+  embedingdim = 100,
+  hidden_size = 512 
+)
+
+```
+
+
+
+#Applying a 2-fold evaluation (train/test)
+Required for saving the model and use it in further experiments
+
+```{r}
+library(caret)
+source("create_csv.R")
+source("preprocess.R")
+source("build_model.R")
+source("tune.R")
+# WARNING it is necesarry to load all the functionf from evaluate_dga.R file. Not refactored for source() yet.
+
+
+result_train_test<-evaluate_model_train_test(train_dataset_keras = datasets$train,
+                                             test_dataset_keras = datasets$test,
+                                             modelfun = keras_model_cnn_argencon,
+                                             experimentname = "cacic-2018",
+                                             model_parameters= selected_parameters)
+cacic_2018_model<-result_train_test$model_learned$model
+#cacic_2018_model<-load_model_hdf5("cacic-2018_model.h5")
+summary(cacic_2018_model)
+```
+
+# Calculating confusion matrix on test set
+```{r}
+#datasets$test$encode
+preds<-get_predictions(model = cacic_2018_model,test_dataset_x =  datasets$test$encode,threshold = 0.90 )
+```
+
+```{r}
+test_results<-data.frame(predicted_class=preds,class=ifelse(grepl("normal",datasets$test$label) ,0,1) ,domain=datasets$test$domain,label=datasets$test$label) 
+test_results
+caret::confusionMatrix(as.factor(test_results$predicted_class),as.factor(test_results$class), positive='1')
+```
+# Ploting per malware TPR
+
+```{r}
+
+wb_labels = c('dga.banjori', 'dga.suppobox', 'dga.volatile', 'dga.matsnu', 'dga.beebone', 'dga.madmax', 'dga.cryptowall')
+dga_results_plot<-ggplot(result_train_test$resultperclass %>% mutate(scheme=ifelse(label %in% wb_labels,"word-based","arithmetic-based")) %>% filter(!grepl('normal',label)) %>% mutate(label=gsub("dga\\.","",label))
+                         ,aes(x=label,y=recall))+
+  geom_point(aes(size=support,fill=scheme),color='black',shape = 21,alpha=0.5)+
+  geom_point(size=1,color='blue',fill='blue',shape = 21)+
+  ylab("True Positive Rate [TPR]")+
+  ggtitle("")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  scale_color_gradient2(low = "cyan", mid='blue',high = "red")+
+   xlab('DGA Malware families' )+
+   guides(colour=FALSE,size=FALSE)+
+    scale_size_continuous(range = c(5,15))+
+  theme(legend.position="bottom")
+dga_results_plot
+ggsave(plot=dga_results_plot,filename = "/home/harpo/Dropbox/ongoing-work/publicaciones/CACIC2018/recall_per_malware_2.png",device = "png", width =8, height = 4)
+
+result_train_test$resultperclass %>% filter(recall <0.75)
+
+```
+
+```{r}
+dga_resultsboxplot_plot<-ggplot(result_train_test$resultperclass %>% 
+                                  mutate(scheme=ifelse(label %in% wb_labels,"word-based","arithmetic-based")) %>% 
+                                  filter(!grepl('normal',label)) %>% 
+                                  mutate(label=gsub("dga\\.","",label)),aes(y=recall))+
+  geom_boxplot(aes(x=scheme,fill=scheme))+
+  geom_point(aes(x=scheme,fill=scheme),size=1,shape = 21,alpha=0.5)+
+  ylab("")+
+  xlab("")+
+  ggtitle("")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  scale_color_gradient2(low = "cyan", mid='blue',high = "red")+
+   guides(colour=FALSE,size=FALSE)+
+    scale_size_continuous(range = c(5,15))+
+  theme(legend.position="bottom")+
+  theme(
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())+
+  guides(fill=FALSE)
+dga_resultsboxplot_plot +scale_y_continuous(breaks=seq(0,1,0.1))
+plotly::ggplotly()
+Rggsave(plot=dga_resultsboxplot_plot,filename = "/home/harpo/Dropbox/ongoing-work/publicaciones/CACIC2018/recall_per_malware_boxplot.png",device = "png", width =1.5, height = 4)
+
+gridExtra::grid.arrange(dga_results_plot,dga_resultsboxplot_plot+scale_y_continuous(breaks=seq(0,1,0.1)),ncol=2,widths=c(5,1)) %>% ggsave(filename = "/home/harpo/Dropbox/ongoing-work/publicaciones/CACIC2018/recall_per_malware_boxplot.png",device = "png", width =8, height = 4)
+
+```
+
+
+
+## TPR vs frequency per DGA family (not used in CACIC paper)
+```{r}
+freq_adr_fig<-ggplot(result_train_test$resultperclass %>% mutate(scheme=ifelse(label %in% wb_labels,"word-based","arithmetic")) %>% filter(!grepl('normal',label)),aes(x=recall,y=support/602108))+
+  geom_point(aes(text=label,color=scheme),alpha=0.6)+
+  xlab("True Positive Rate [TPR]")+ylab(" Relative Frequency [percent]")+
+  geom_smooth(method='lm',color='orange')+
+  
+#  geom_point(x=0.9997307,y=263666/602108,color='green')+
+#  geom_text(x=0.9997307,y=257666/602108,label='banjori')+
+  
+#   geom_point(x=0.9907212,y=67681/602108,color='green')+
+#  geom_text(x=0.9907212,y=77081/602108,label='cryptolocker')+
+  
+ # geom_point(x=0.9999090,y=131861/602108,color='green')+
+#  geom_text(x=0.9999090,y=125861/602108, label='post')+
+  
+ # geom_point(x=0.992440,y=116332/602108,color='green')+
+#  geom_text(x=0.9924440,y=110332/602108, label='tinba')+
+  
+ # geom_point(x=0.9992793,y=61050/602108,color='green')+
+#  geom_text(x=0.9992793,y=52050/602108, label='ramdo')+
+  
+#  geom_point(x=0.1607143,y=56/602108	,color='red')+
+#  geom_text(x=0.1607143,y=11556/602108	, label='cryptowall')+
+  
+#  geom_point(x=0.3171833,y=4871/602108,color='red')+
+#  geom_text(x=0.3171833,y=16871/602108, label='suppobox')+
+ 
+#  geom_point(x=0.4565729,y=7219/602108,color='red')+
+#  geom_text(x=0.4565729,y=19019/602108, label='virut')+
+  scale_y_continuous(labels=scales::percent) +
+ 
+   
+  theme_bw()
+freq_adr_fig
+
+plotly::ggplotly()
+result_train_test$resultperclass %>% inner_join(top_dga_families,by='label')
+result_train_test$resultperclass %>% filter(recall <0.75)
+        
+
+ggsave(plot=freq_adr_fig,filename = "/home/harpo/Dropbox/ongoing-work/publicaciones/CACIC2018/dga_freq_adr_fig.png",device = "png", width =10, height = 4)
+```
+
+# Analyzing FN results
+```{r}
+FN_domains<-test_results %>% filter(predicted_class == 0 & class == 1) %>% select(domain,predicted_class,label)
+FP_domains<-test_results %>% filter(predicted_class == 1 & class == 0) %>% select(domain,predicted_class,label)
+TP_domains<-test_results %>% filter(predicted_class == 1 & class == 1) %>% select(domain,predicted_class,label)
+TN_domains<-test_results %>% filter(predicted_class == 0 & class == 0) %>% select(domain,predicted_class,label)
+```
+
+## Helper function for calculating character distribution (FCD)
+```{r}
+char_dist<- function(label_name){
+  library(scales)
+  
+  charlist_FN=FN_domains %>% filter(grepl(label_name,label)) %>% group_by(label) %>% do(charlist= unlist(sapply(.$domain, function(x) c(str_split(x,"")[1]))))
+  charlist_TP=TP_domains %>% filter(grepl(label_name,label)) %>%group_by(label) %>% do(charlist= unlist(sapply(.$domain, function(x) c(str_split(x,"")[1]))))
+  
+  charlist_FN=as.vector(unlist(charlist_FN %>% select(charlist)))
+  charlist_TP=as.vector(unlist(charlist_TP %>% select(charlist)))
+  
+  tpplot<-ggplot(data.frame(charlist=charlist_TP),aes(x=charlist))+
+    geom_bar(col="black",fill='white',aes(y = (..count..)/sum(..count..)))+
+    scale_y_continuous(labels=percent)+ylab("Percent")+xlab("")+
+    theme_bw()
+  
+  
+  fnplot<-ggplot(data.frame(charlist=charlist_FN),aes(x=charlist))+
+    geom_bar(col="black",fill='black',aes(y = (..count..)/sum(..count..)))+
+    scale_y_continuous(labels=percent)+ylab("Percent")+xlab("")+
+    theme_bw()
+  
+  gridExtra::grid.arrange(fnplot,tpplot,ncol=1)
+  return(list(fnplot=fnplot,tpplot=tpplot))
+}
+```
+## Helper function for calculating pca 2D proyection
+```{r}
+pca_projection<-function(label_name){
+  FN_domains_label<-FN_domains  %>% filter(grepl(label_name,label)) %>% select(domain,label)
+  TP_domains_label<-TP_domains  %>% filter(grepl(label_name,label)) %>% select(domain,label)
+
+  FN_tokenized=tokenize(as.matrix(FN_domains_label$domain),FN_domains_label$label)
+  TP_tokenized=tokenize(as.matrix(TP_domains_label$domain),TP_domains_label$label)
+  FN_tokenized$res<-rep("FN", length(FN_tokenized$domain))
+  TP_tokenized$res<-rep("TP", length(TP_tokenized$domain))
+  
+  malware_results=list()
+  malware_results$encode<-abind(FN_tokenized$encode,TP_tokenized$encode,along=1)
+  malware_results$domain<-c(FN_tokenized$domain,TP_tokenized$domain)
+  malware_results$res<-c(FN_tokenized$res,TP_tokenized$res)
+  malware_results$label<-c(as.character(FN_tokenized$label),as.character(TP_tokenized$label))
+  
+  nrow(malware_results$encode)
+  length(malware_results$label)
+  length(malware_results$domain)
+  
+  pca=prcomp(malware_results$encode[,1:20],center=TRUE,scale.=TRUE)
+  pca_data<-data.frame(pca$x,res=malware_results$res,label=malware_results$label,domain=malware_results$domain)
+  pca_plot<-ggplot(pca_data %>% sample_n(1000),aes(x=PC1,y=PC4))+
+    geom_point(aes(color=res,text=domain,shape=as.factor(label)),alpha=0.5)+
+    theme_bw()
+  
+  return (list(pca_plot=pca_plot,pca_data=pca_data))
+}
+r<-pca_projection("suppobox|beebone")
+r$pca_plot
+
+plotly::plot_ly(r$pca_data %>% sample_n(1000), type="scatter3d", 
+                x = ~PC1, y = ~PC2, z = ~PC4, color = ~res, symbol = ~label,
+                colors = c('#BF382A', '#0C4B8E'), 
+                opacity=0.5, marker = list(size = 3),text = ~domain) 
+```
+
+## Some analisys per malware
+```{r}
+
+r<-pca_projection("dga.symmi")
+r<-pca_projection("dga.virut")
+
+
+suppo_charlist<-char_dist("dga.suppobox")
+virut_charlist<-char_dist("dga.virut")
+shifu_charlist<-char_dist("dga.shifu")
+simda_charlist<-char_dist("dga.simda")
+matsnu_charlist<-char_dist("dga.matsnu")
+chinad_charlist<-char_dist("dga.chinad")
+beebone_charlist<-char_dist("dga.beebone")
+
+```
+
+# Cluster Length Distribution (CLD)
+```{r}
+normal_len<-data.frame(label=train_dataset_keras$label,domain=train_dataset_keras$domain) %>% 
+  filter(grepl(pattern = "normal", x=label)) %>%
+           mutate(lenght=str_length(domain))
+matsnu_len<-data.frame(label=train_dataset_keras$label,domain=train_dataset_keras$domain) %>% 
+  filter(grepl(pattern = "matsnu", x=label)) %>%
+  mutate(lenght=str_length(domain))
+
+normal_len %>% ggplot()+
+  geom_histogram(data=matsnu_len,aes(x=lenght),fill='orange',alpha=0.7)+
+  geom_histogram(aes(x=lenght),fill='skyblue',alpha=0.7)+
+  
+  xlab("domain name length")+
+  theme_bw()
+
+len<-data.frame(label=train_dataset_keras$label,domain=train_dataset_keras$domain) %>% 
+  filter(grepl(pattern = "normal|matsnu|suppobox", x=label)) %>%
+  mutate(length=str_length(domain))
+
+matsnu_vs_normal_len<-len %>% ggplot()+
+  geom_histogram(aes(x=length,fill=label),alpha=0.4,color='gray',binwidth = 2)+
+  
+  xlab("domain name length")+
+  theme_bw()+
+  theme(legend.position="bottom")
+
+matsnu_vs_normal_len<-len %>% ggplot()+
+  geom_boxplot(aes(y=length,x=label,fill=label),alpha=0.4,color='gray',binwidth = 2)+
+  
+  #xlab("domain name length")+
+  theme_bw()+
+  theme(legend.position="bottom")+
+  guides(fill=FALSE)
+
+ggsave(plot=matsnu_vs_normal_len,filename = "/home/harpo/Dropbox/ongoing-work/publicaciones/CACIC2018/matsnu_vs_normal_len.png",device = "png", width =8, height = 2)
+
+
+
+
+
+```
+

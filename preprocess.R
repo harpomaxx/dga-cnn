@@ -9,7 +9,7 @@ names(tokens) <- valid_characters_vector
 tokenize <- function(data,labels){
   #string_char_vector <- strsplit(string,split="")[[1]]
   x_data <- sapply(
-    lapply(data,function(x) strsplit(tolower(x),split="")),function(x) lapply(x[[1]], function(x) tokens[[x]]))
+    lapply(data,function(x) strsplit(tolower(x),split="")),function(x) lapply(x[[1]], function(x) {tokens[[x]] }))
   padded_token<-pad_sequences(x_data,maxlen=45,padding='post', truncating='post')
   return (list(encode=padded_token,domain=data, label=labels))
   #return (list(encode=padded_token))

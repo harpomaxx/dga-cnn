@@ -1,19 +1,29 @@
 # keras model used in ARGECON 2018 (rejected) paper
 
 default_keras_model_cnn_argencon_parameters_tune=list(
-  nb_filter = c(256,128,63,32),
-  kernel_size = c(8,4,2),
+  nb_filter = c(256,128,64,32),
+  kernel_size = c(16,8,4,2),
   embedingdim = c(100,50,32),
-  hidden_size = c(1024,512,128)
+  hidden_size = c(1024,512,256,128,64)
 )
 
+#default_keras_model_cnn_argencon_parameters_tune=list(
+#  nb_filter = c(256,128),
+#  kernel_size = c(8),
+#  embedingdim = c(100),
+#  hidden_size = c(1024)
+#)
+
+
+
 default_keras_model_cnn_argencon_parameters=list(
-  nb_filter = 128,
-  #nb_filter = 256,
+  #nb_filter = 128,
+  nb_filter = 256,
   kernel_size = 8,
   #kernel_size = 4,
   embedingdim = 100,
   hidden_size = 1024
+  #hidden_size = 512
 )
 
 keras_model_cnn_argencon<-function(x,parameters=default_keras_model_cnn_argencon_parameters)

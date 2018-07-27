@@ -1,0 +1,25 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r fig.height=8}
+b<-read_csv("results/results_tuning_cacic2018-k10.csv")
+
+#reshape2::melt(b,id.vars=c("nb_filter","kernel_size","embedingdim","hidden_size"))
+cbind(b,b %>% unite(id,nb_filter, kernel_size, embedingdim, hidden_size, sep = '__') %>% select(id)) %>% filter(kernel_size!=16)  %>% arrange(desc(value.F1)) %>% head(10) %>%
+  ggplot() +
+  geom_point(aes(y=value.F1,x=id,color=as.factor(kernel_size),shape=as.factor(nb_filter),size=2 ) )+
+  geom_errorbar(aes(x=id,ymin=value.F1-value.sd,ymax=value.F1+value.sd),width=0.1)+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+plotly::ggplotly()
+b
+```
+
+```{r}
+best<-read_csv("results/results_tuning_best_cvcacic2018-k10_cv.csv")
+
+best %>% filter(metric=="F1") %>% summarise(avg=mean(value),sd=sd(value))
+
+```
+
